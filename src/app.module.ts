@@ -47,11 +47,11 @@ import { VnpayModule } from "./modules/vnpay/vnpay.module";
       dbName: process.env.MONGO_DB_NAME,
     }),
     BullModule.forRoot({
-      redis: {
-        host: "localhost",
-        port: 6379,
-      },
-    }),
+  redis: {
+    host: process.env.REDIS_HOST || "localhost",
+    port: parseInt(process.env.REDIS_PORT) || 6379,
+  },
+}),
 
     SharedModule,
     AuthModule,
