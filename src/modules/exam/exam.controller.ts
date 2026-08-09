@@ -11,13 +11,16 @@ import { PublishExamDto } from "./dtos/publish-exam.dto";
 import { PreviewExamDto } from "./dtos/preview-exam.dto";
 import { Public } from "src/common/decorators/public.decorator";
 import { GetExamContentByHashIdDto } from "./dtos/get-examContentByHashId";
+import { AiExamParseService } from "./aiExamParse.service";
+import { AiParseDto } from "./dtos/ai-parse.dto";
 
 @ApiTags("Exam")
 @Controller("exams")
 export class ExamController {
   constructor(
     @Inject(REQUEST) private readonly request: any,
-    private readonly examService: ExamService
+    private readonly examService: ExamService,
+    private readonly aiExamParseService: AiExamParseService
   ) {}
 
   @ApiOperation({
@@ -74,6 +77,14 @@ export class ExamController {
     const userId = this.request?.user?.sub;
 
     return this.examService.create(userId, createExamDto);
+  }
+
+  @ApiOperation({ summary: "Read exam pages (images) with AI and return structured questions (MC/TF/SA)" })
+  @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
+  @Post("/ai-parse")
+  async aiParse(@Body(new ValidationPipe({ whitelist: true })) body: AiParseDto) {
+    return this.aiExamParseService.parseFromImages(body.images);
   }
 
   @ApiBearerAuth()
