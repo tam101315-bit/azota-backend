@@ -1,12 +1,12 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from "@nestjs/common";
 
-interface AiParsedStatement {
+export interface AiParsedStatement {
   label: "a" | "b" | "c" | "d";
   text: string;
   isTrue: boolean;
 }
 
-interface AiParsedQuestion {
+export interface AiParsedQuestion {
   type: "MC" | "TF" | "SA";
   content: string;
   answers?: { A: string; B: string; C: string; D: string };
