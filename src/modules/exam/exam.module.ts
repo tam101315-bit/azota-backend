@@ -8,11 +8,19 @@ import { QuestionModule } from "../question/question.module";
 import { OptionModule } from "../option/option.module";
 import { ClassroomModule } from "../classroom/classroom.module";
 import { StudentModule } from "../student/student.module";
+import { AiExamParseService } from "./aiExamParse.service";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Exam]), QuestionPartModule, QuestionModule, OptionModule, ClassroomModule, StudentModule],
+  imports: [
+    TypeOrmModule.forFeature([Exam]),
+    QuestionPartModule,
+    QuestionModule,
+    OptionModule,
+    ClassroomModule,
+    StudentModule,
+  ],
   controllers: [ExamController],
-  providers: [ExamService],
+  providers: [ExamService, AiExamParseService],
   exports: [ExamService],
 })
 export class ExamModule {}
