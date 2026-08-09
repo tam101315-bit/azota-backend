@@ -3,10 +3,11 @@ import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
 import * as cookieParser from "cookie-parser";
+import { json } from "express";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.useBodyParser("json", { limit: "25mb" });
+  app.use(json({ limit: "25mb" }));
   app.enableCors({
     origin: "https://vantamcrack.vercel.app",
     credentials: true,
