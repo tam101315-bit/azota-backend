@@ -90,9 +90,13 @@ export class AiExamParseService {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        messages: [{ role: "user", content }],
-      }),
+  models: [
+    OPENROUTER_MODEL,
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+  ],
+  messages: [{ role: "user", content }],
+}),
     });
 
     if (!response.ok) {
