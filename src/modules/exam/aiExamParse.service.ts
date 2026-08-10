@@ -15,22 +15,20 @@ export interface AiParsedQuestion {
   answer?: string;
 }
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free";
 
 const PROMPT = `Bạn đang xem các trang của một đề thi tiếng Việt (dạng ảnh chụp từng trang, theo đúng thứ tự trang).
 
-Hãy đọc và tách TOÀN BỘ câu hỏi trong các trang này thành một mảng JSON duy nhất, theo đúng schema sau (không thêm chữ giải thích nào khác ngoài JSON):
+Hãy đọc và tách TOÀN BỘ câu hỏi trong các trang này thành một mảng JSON duy nhất, theo đúng schema sau. CHỈ trả về JSON hợp lệ, không có chữ giải thích nào khác, không có markdown code fence (không bọc trong \`\`\`):
 
 {
   "questions": [
-    // Loại 1: Trắc nghiệm 4 đáp án (chỉ 1 đáp án đúng)
     {
       "type": "MC",
       "content": "nội dung câu hỏi",
       "answers": { "A": "...", "B": "...", "C": "...", "D": "..." },
-      "correct": "A"  // chữ cái đáp án đúng - suy luận từ màu chữ khác biệt, in đậm, hoặc dấu hiệu đánh dấu đáp án đúng trong ảnh
+      "correct": "A"
     },
-    // Loại 2: Đúng/Sai (4 ý nhỏ a/b/c/d, mỗi ý đúng hoặc sai độc lập)
     {
       "type": "TF",
       "content": "nội dung câu hỏi chính",
@@ -41,7 +39,6 @@ Hãy đọc và tách TOÀN BỘ câu hỏi trong các trang này thành một m
         { "label": "d", "text": "...", "isTrue": false }
       ]
     },
-    // Loại 3: Trả lời ngắn (câu hỏi tự luận ngắn, không có lựa chọn)
     {
       "type": "SA",
       "content": "nội dung câu hỏi",
@@ -52,66 +49,70 @@ Hãy đọc và tách TOÀN BỘ câu hỏi trong các trang này thành một m
 
 Lưu ý quan trọng:
 - Giữ đúng thứ tự câu hỏi xuất hiện trong tài liệu, gộp chung tất cả các trang thành 1 mảng "questions" duy nhất.
-- Với câu Trắc nghiệm: nếu không có dấu hiệu rõ ràng nào cho đáp án đúng (không tô màu/in đậm khác biệt), hãy để "correct": "A" làm mặc định — người dùng sẽ tự kiểm tra lại.
-- Với câu Đúng/Sai: nếu tài liệu không cho biết ý nào đúng/sai, hãy để tất cả "isTrue": false — người dùng sẽ tự chọn lại.
-- Bỏ qua watermark, logo, số trang, tên đơn vị phát hành tài liệu — chỉ lấy nội dung đề thi thật.
-- Chỉ trả về JSON hợp lệ, không có markdown code fence, không có chữ nào khác.`;
+- Với câu Trắc nghiệm: đáp án đúng thường được đánh dấu bằng màu chữ khác biệt (ví dụ đỏ, hoặc in đậm) so với các đáp án còn lại — hãy nhìn kỹ và suy luận đáp án đúng dựa vào dấu hiệu này. Nếu không có dấu hiệu rõ ràng, để "correct": "A" làm mặc định.
+- Với câu Đúng/Sai: nếu tài liệu không cho biết ý nào đúng/sai, để tất cả "isTrue": false — người dùng sẽ tự chọn lại.
+- Bỏ qua watermark, logo, số trang, tên đơn vị phát hành tài liệu — chỉ lấy nội dung đề thi thật.`;
+
+function stripJsonFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+}
 
 @Injectable()
 export class AiExamParseService {
   async parseFromImages(images: string[]): Promise<{ questions: AiParsedQuestion[] }> {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      throw new InternalServerErrorException("GEMINI_API_KEY chưa được cấu hình trên server.");
+      throw new InternalServerErrorException("OPENROUTER_API_KEY chưa được cấu hình trên server.");
     }
     if (!images || images.length === 0) {
       throw new BadRequestException("Không có ảnh nào được gửi lên.");
     }
 
-    const parts: any[] = images.map((base64) => ({
-      inline_data: {
-        mime_type: "image/jpeg",
-        data: base64.replace(/^data:image\/\w+;base64,/, ""),
-      },
-    }));
-    parts.push({ text: PROMPT });
+    const content: any[] = [{ type: "text", text: PROMPT }];
+    images.forEach((base64) => {
+      const dataUrl = base64.startsWith("data:") ? base64 : `data:image/jpeg;base64,${base64}`;
+      content.push({ type: "image_url", image_url: { url: dataUrl } });
+    });
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-
-    const response = await fetch(url, {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
+        model: OPENROUTER_MODEL,
+        messages: [{ role: "user", content }],
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new InternalServerErrorException(`Gemini API lỗi (${response.status}): ${errText}`);
+      throw new InternalServerErrorException(`OpenRouter API lỗi (${response.status}): ${errText}`);
     }
 
     const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawText: string | undefined = data?.choices?.[0]?.message?.content;
 
     if (!rawText) {
-      throw new InternalServerErrorException("Gemini không trả về nội dung hợp lệ.");
+      throw new InternalServerErrorException("OpenRouter không trả về nội dung hợp lệ.");
     }
 
     try {
-      const parsed = JSON.parse(rawText);
+      const parsed = JSON.parse(stripJsonFence(rawText));
       if (!Array.isArray(parsed?.questions)) {
         throw new Error("missing questions array");
       }
       return parsed;
     } catch (err) {
-      throw new InternalServerErrorException("Không đọc được JSON từ phản hồi của Gemini: " + rawText.slice(0, 300));
+      throw new InternalServerErrorException(
+        "Không đọc được JSON từ phản hồi của OpenRouter: " + rawText.slice(0, 300),
+      );
     }
   }
 }
