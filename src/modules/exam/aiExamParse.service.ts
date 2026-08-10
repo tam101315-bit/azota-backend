@@ -48,6 +48,10 @@ Hãy đọc và tách TOÀN BỘ câu hỏi trong các trang này thành một m
 }
 
 Lưu ý quan trọng:
+Quy tắc phân loại loại câu hỏi (RẤT QUAN TRỌNG — đọc kỹ trước khi quyết định type):
+- "MC" (Trắc nghiệm): CHỈ dùng khi câu hỏi có liệt kê sẵn các phương án trả lời (ví dụ A/B/C/D hoặc 1/2/3/4).
+- "TF" (Đúng/Sai): CHỈ dùng khi câu hỏi có đúng 4 mệnh đề nhỏ dạng a) b) c) d) mà người làm phải đánh giá đúng/sai từng ý.
+- "SA" (Trả lời ngắn): dùng cho MỌI câu hỏi KHÔNG có phương án trả lời nào được liệt kê sẵn trong đề — ví dụ câu yêu cầu tính toán, điền số, điền từ, viết công thức. Đây là trường hợp RẤT PHỔ BIẾN, đừng nhầm sang "MC". Tuyệt đối không tự bịa ra 4 phương án A/B/C/D nếu đề gốc không hề ghi chúng.
 - Giữ đúng thứ tự câu hỏi xuất hiện trong tài liệu, gộp chung tất cả các trang thành 1 mảng "questions" duy nhất.
 - Với câu Trắc nghiệm: đáp án đúng thường được đánh dấu bằng màu chữ khác biệt (ví dụ đỏ, hoặc in đậm) so với các đáp án còn lại — hãy nhìn kỹ và suy luận đáp án đúng dựa vào dấu hiệu này. Nếu không có dấu hiệu rõ ràng, để "correct": "A" làm mặc định.
 - Với câu Đúng/Sai: nếu tài liệu không cho biết ý nào đúng/sai, để tất cả "isTrue": false — người dùng sẽ tự chọn lại.
