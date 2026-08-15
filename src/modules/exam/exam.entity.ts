@@ -2,7 +2,6 @@ import { Entity, Column, OneToMany, ManyToOne, BeforeInsert, JoinColumn } from "
 import { IsNotEmpty, Validate } from "class-validator";
 import { ExamAssignType, ExamType, FeeType, ShowAnswer, ShowResult } from "src/shared/constant";
 import { BaseEntity } from "src/common/mysql/base.entity";
-import { Question } from "../question/question.entity";
 import { QuestionPart } from "../questionPart/questionPart.entity";
 import { ExamClass } from "../examClass/examClass.entity";
 import { ExamStudent } from "../examStudent/examStudent.entity";
@@ -110,10 +109,7 @@ export class Exam extends BaseEntity {
   @Column()
   subjectId: number;
 
-  /* --------------------------------- Config --------------------------------- */
-  @OneToMany(() => Question, (question) => question.exam)
-  questions: Question[];
-
+  /* -------------------------------- Config -------------------------------- */
   @OneToMany(() => QuestionPart, (questionPart) => questionPart.exam)
   questionParts: QuestionPart[];
 
@@ -133,7 +129,7 @@ export class Exam extends BaseEntity {
   @JoinColumn({ name: "teacherId" })
   teacher: Teacher;
 
-  /* --------------------------------- Answers -------------------------------- */
+  /* -------------------------------- Answers -------------------------------- */
   @OneToMany(() => ExamClass, (examClass) => examClass.exam)
   examClasses: ExamClass[];
 
