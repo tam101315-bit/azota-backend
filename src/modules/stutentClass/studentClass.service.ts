@@ -146,14 +146,13 @@ export class StudentClassService {
     }
   }
 
-  async createAnonymous(fullname: string): Promise<StudentClassDto> {
+      async createAnonymous(fullname: string): Promise<StudentClassDto> {
     try {
       const newStudentClass = this.studentClassRepository.create({
         fullname,
-        identificationNumber: "000001",
+        identificationNumber: `AN${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 100)}`,
         classroomId: -1,
       });
-
       const savedStudentClass = await this.studentClassRepository.save(newStudentClass);
 
       return plainToInstance(StudentClassDto, savedStudentClass);
