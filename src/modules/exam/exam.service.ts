@@ -89,23 +89,8 @@ export class ExamService {
     }
   }
 
-  async getContentByHashId(
-    user: { sub: number; anonymous?: boolean },
-    hashId: string
-  ): Promise<GetExamContentByHashIdDto> {
+  async getContentByHashId(hashId: string): Promise<GetExamContentByHashIdDto> {
     try {
-      const isAnonymous = !!user?.anonymous;
-
-      // User ẩn danh không có bản ghi Student (không đăng nhập thật) -> bỏ qua bước tìm Student,
-      // xử lý quyền truy cập riêng ở dưới (chỉ cho phép đề thi công khai - assignType ALL)
-      let student = null;
-      if (!isAnonymous) {
-        student = await this.studentService.findOneByUserId(user.sub);
-        if (!student) {
-          throw new NotFoundException("Student not found");
-        }
-      }
-
       console.log("hashId: ", hashId);
 
       const exam = await this.examRepository.findOne({
@@ -136,28 +121,8 @@ export class ExamService {
         });
       });
 
-      if (exam.assignType === ExamAssignType.ALL) {
-        return plainToInstance(GetExamContentByHashIdDto, exam);
-      }
-
-      // Đề thi giới hạn theo lớp/học sinh cụ thể -> bắt buộc phải là user thật (không phải ẩn danh)
-      if (isAnonymous) {
-        throw new UnauthorizedException("This exam requires you to log in with a real account");
-      }
-
-      const isAssignedStudent: boolean = exam.examStudents.some((examStudent) => examStudent.id === student.id);
-      const isAssignedClass: boolean = exam.examClasses.some((examClass) =>
-        examClass.classroom.studentClasses.some((studentClass) => studentClass.id === student.id)
-      );
-
-      if (
-        (exam.assignType === ExamAssignType.CLASS && isAssignedClass) ||
-        (exam.assignType === ExamAssignType.STUDENT && isAssignedStudent)
-      ) {
-        return plainToInstance(GetExamContentByHashIdDto, exam);
-      } else {
-        throw new UnauthorizedException("You not assigned for this exam");
-      }
+      // Ai có link (hashId) đều xem được nội dung đề thi, không cần đăng nhập/phân quyền
+      return plainToInstance(GetExamContentByHashIdDto, exam);
     } catch (error) {
       console.log(error);
       throw error;
