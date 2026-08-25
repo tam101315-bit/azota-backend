@@ -61,13 +61,10 @@ export class ExamController {
   }
 
   @ApiOperation({ summary: "For the students, retrieve exam content to exam without revealing the correct answer" })
-  @ApiBearerAuth()
-  @Roles([UserRole.STUDENT])
+  @Public()
   @Get("/hash-id/:hashId/content")
   async getContentByHashId(@Param("hashId") hashId: string): Promise<GetExamContentByHashIdDto> {
-    const user = this.request?.user;
-
-    return this.examService.getContentByHashId(user, hashId);
+    return this.examService.getContentByHashId(hashId);
   }
 
   @ApiBearerAuth()
