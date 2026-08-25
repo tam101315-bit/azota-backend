@@ -9,6 +9,8 @@ import { plainToInstance } from "class-transformer";
 import { StudentService } from "../student/student.service";
 import { HomeworkService } from "../homework/homework.service";
 import { QueryParamsDto } from "src/shared/dto";
+import { JwtService } from "@nestjs/jwt";
+import { jwtConstants } from "src/config/jwt.config";
 
 @Injectable()
 export class StudentClassService {
@@ -18,7 +20,8 @@ export class StudentClassService {
     private readonly studentService: StudentService,
     private readonly teacherService: TeacherService,
     private readonly classroomService: ClassroomService,
-    private readonly homeworkService: HomeworkService
+    private readonly homeworkService: HomeworkService,
+    private readonly jwtService: JwtService
   ) {}
 
   async findByPk(id: number): Promise<StudentClass> {
@@ -146,7 +149,7 @@ export class StudentClassService {
     }
   }
 
-      async createAnonymous(fullname: string): Promise<StudentClassDto> {
+  async createAnonymous(fullname: string): Promise<StudentClassDto & { accessToken: string }> {
     try {
       const newStudentClass = this.studentClassRepository.create({
         fullname,
@@ -155,7 +158,20 @@ export class StudentClassService {
       });
       const savedStudentClass = await this.studentClassRepository.save(newStudentClass);
 
-      return plainToInstance(StudentClassDto, savedStudentClass);
+      const payload = {
+        sub: savedStudentClass.id,
+        role: "STUDENT",
+        anonymous: true,
+      };
+
+      const accessToken = await this.jwtService.signAsync(payload, {
+        secret: jwtConstants.secret,
+        expiresIn: "1h",
+      });
+
+      const dto = plainToInstance(StudentClassDto, savedStudentClass);
+
+      return { ...dto, accessToken };
     } catch (error) {
       console.log(error);
       throw error;
