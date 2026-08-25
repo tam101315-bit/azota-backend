@@ -65,9 +65,9 @@ export class ExamController {
   @Roles([UserRole.STUDENT])
   @Get("/hash-id/:hashId/content")
   async getContentByHashId(@Param("hashId") hashId: string): Promise<GetExamContentByHashIdDto> {
-    const userId = this.request?.user.sub;
+    const user = this.request?.user;
 
-    return this.examService.getContentByHashId(userId, hashId);
+    return this.examService.getContentByHashId(user, hashId);
   }
 
   @ApiBearerAuth()
