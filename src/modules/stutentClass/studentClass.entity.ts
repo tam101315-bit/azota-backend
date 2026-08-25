@@ -38,7 +38,7 @@ export class StudentClass extends BaseEntity {
   @IsDate()
   DOB: Date;
 
-  @Column({ length: 6 })
+  @Column({ length: 30 })
   @IsNotEmpty()
   identificationNumber: string;
 
