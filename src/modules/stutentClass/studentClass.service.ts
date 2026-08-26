@@ -11,6 +11,9 @@ import { HomeworkService } from "../homework/homework.service";
 import { QueryParamsDto } from "src/shared/dto";
 import { JwtService } from "@nestjs/jwt";
 import { jwtConstants } from "src/config/jwt.config";
+import { UserService } from "../user/user.service";
+import { UserRole } from "src/shared/constant";
+import { generateRandomString } from "src/shared/utils";
 
 @Injectable()
 export class StudentClassService {
@@ -21,7 +24,8 @@ export class StudentClassService {
     private readonly teacherService: TeacherService,
     private readonly classroomService: ClassroomService,
     private readonly homeworkService: HomeworkService,
-    private readonly jwtService: JwtService
+    private readonly jwtService: JwtService,
+    private readonly userService: UserService
   ) {}
 
   async findByPk(id: number): Promise<StudentClass> {
@@ -151,18 +155,27 @@ export class StudentClassService {
 
   async createAnonymous(fullname: string): Promise<StudentClassDto & { accessToken: string }> {
     try {
+      // Tạo 1 User + Student "ẩn danh" thật sự (username/password ngẫu nhiên, không dùng để đăng nhập thủ công)
+      // để khớp với toàn bộ hệ thống hiện có (nộp bài thi, xem điểm, xem lịch sử... đều dựa trên Student)
+      const newUser = await this.userService.create({
+        username: `anon_${generateRandomString(20)}`,
+        password: generateRandomString(12),
+        fullname,
+        role: UserRole.STUDENT,
+      });
+
+      const newStudent = await this.studentService.create(newUser.id);
+
       const newStudentClass = this.studentClassRepository.create({
         fullname,
         identificationNumber: `AN${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 100)}`,
         classroomId: -1,
+        student: newStudent,
+        confirmedAt: new Date(),
       });
       const savedStudentClass = await this.studentClassRepository.save(newStudentClass);
 
-      const payload = {
-        sub: savedStudentClass.id,
-        role: "STUDENT",
-        anonymous: true,
-      };
+      const payload = { sub: newUser.id, username: newUser.username };
 
       const accessToken = await this.jwtService.signAsync(payload, {
         secret: jwtConstants.secret,
