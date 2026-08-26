@@ -39,7 +39,6 @@ export class ExamResultController {
   }
 
   @ApiBearerAuth()
-  @Roles([UserRole.STUDENT])
   @Get("/:id/score")
   async getScore(@Param("id") id: number): Promise<MarkExamResultDto> {
     const userId = this.request?.user?.sub;
@@ -60,8 +59,9 @@ export class ExamResultController {
     return this.examResultService.getLatestOfStudentByExamAndClass(userId, examId, classroomId, queryParamsDto);
   }
 
+  // Bỏ @Roles([UserRole.STUDENT]) -> bất kỳ tài khoản nào đã đăng nhập (giáo viên, học sinh, admin, ẩn danh...)
+  // đều có thể nộp bài thi. Chỉ cần có Bearer token hợp lệ (@ApiBearerAuth vẫn giữ để yêu cầu đăng nhập/token).
   @ApiBearerAuth()
-  @Roles([UserRole.STUDENT])
   @Post()
   async create(@Body() createExamResultDto: CreateExamResultDto): Promise<ExamResultDto> {
     const userId = this.request.user.sub;
