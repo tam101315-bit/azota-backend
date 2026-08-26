@@ -7,7 +7,6 @@ import { StudentService } from "../student/student.service";
 import { CreateExamResultDto } from "./dtos/create-examResult.dto";
 import { Exam } from "../exam/exam.entity";
 import { plainToInstance } from "class-transformer";
-import { ExamAssignType } from "src/shared/constant";
 import { MarkExamResultDto } from "./dtos/mark-examResult.dto";
 import { ExamResultAnswerDto } from "./dtos/examResultAnswer.dto";
 import { QueryParamsDto } from "src/shared/dto";
@@ -218,9 +217,11 @@ export class ExamResultService {
       const { hashId, answer, startedAt } = createExamResultDto;
       const savedAt = new Date();
 
-      const student = await this.studentService.findOneByUserId(userId);
+      // Bất kỳ tài khoản nào (giáo viên, học sinh, admin...) đều được phép làm bài thi.
+      // Nếu tài khoản đó chưa có bản ghi Student (vd: tài khoản giáo viên) -> tự tạo để có thể nộp bài.
+      let student = await this.studentService.findOneByUserId(userId);
       if (!student) {
-        throw new NotFoundException("Student not found");
+        student = await this.studentService.create(userId);
       }
 
       const exam = await this.examRepository.findOne({
@@ -237,30 +238,18 @@ export class ExamResultService {
         throw new NotFoundException("Exam not found");
       }
 
-      const isAssignedStudent: boolean = exam.examStudents.some((examStudent) => examStudent.id === student.id);
-      const isAssignedClass: boolean = exam.examClasses.some((examClass) =>
-        examClass.classroom.studentClasses.some((studentClass) => studentClass.id === student.id)
-      );
+      // Ai có link đề thi (hashId) cũng làm bài và nộp bài được, không giới hạn theo assignType/gán trước
+      const newExamResult = this.examResultRepository.create({
+        answer,
+        startedAt,
+        savedAt: savedAt,
+        exam,
+        student,
+      });
 
-      if (
-        exam.assignType === ExamAssignType.ALL ||
-        (exam.assignType === ExamAssignType.CLASS && isAssignedClass) ||
-        (exam.assignType === ExamAssignType.STUDENT && isAssignedStudent)
-      ) {
-        const newExamResult = this.examResultRepository.create({
-          answer,
-          startedAt,
-          savedAt: savedAt,
-          exam,
-          student,
-        });
+      const savedExamResult = await this.examResultRepository.save(newExamResult);
 
-        const savedExamResult = await this.examResultRepository.save(newExamResult);
-
-        return plainToInstance(ExamResultDto, savedExamResult);
-      } else {
-        throw new UnauthorizedException("You not assigned for this exam");
-      }
+      return plainToInstance(ExamResultDto, savedExamResult);
     } catch (error) {
       console.log(error);
       throw error;
