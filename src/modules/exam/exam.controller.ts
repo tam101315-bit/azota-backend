@@ -1,71 +1,107 @@
-import { Body, Controller, Get, Inject, Param, Post, Query } from "@nestjs/common";
-import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { ExamResultService } from "./examResult.service";
-import { Roles } from "src/common/decorators/roles.decorator";
+import { Body, Controller, Delete, Get, Inject, Param, Post, Query, ValidationPipe } from "@nestjs/common";
+import { ExamService } from "./exam.service";
 import { UserRole } from "src/shared/constant";
+import { CreateExamDto } from "./dtos/create-exam.dto";
+import { ExamDto } from "./dtos/exam.dto";
+import { Roles } from "src/common/decorators/roles.decorator";
 import { REQUEST } from "@nestjs/core";
-import { ExamResultDto } from "./dtos/examResult.dto";
-import { CreateExamResultDto } from "./dtos/create-examResult.dto";
-import { MarkExamResultDto } from "./dtos/mark-examResult.dto";
+import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { QueryParamsDto } from "src/shared/dto";
-import { PreviewExamResultDto } from "./dtos/preview-examResult.dto";
+import { PublishExamDto } from "./dtos/publish-exam.dto";
+import { PreviewExamDto } from "./dtos/preview-exam.dto";
+import { Public } from "src/common/decorators/public.decorator";
+import { GetExamContentByHashIdDto } from "./dtos/get-examContentByHashId";
+import { AiExamParseService } from "./aiExamParse.service";
+import { AiParseDto } from "./dtos/ai-parse.dto";
 
-@ApiTags("Exam Result")
-@Controller("exam-results")
-export class ExamResultController {
+@ApiTags("Exam")
+@Controller("exams")
+export class ExamController {
   constructor(
     @Inject(REQUEST) private readonly request: any,
-    private readonly examResultService: ExamResultService
+    private readonly examService: ExamService,
+    private readonly aiExamParseService: AiExamParseService
   ) {}
 
+  @ApiOperation({
+    summary: "Get list of exam",
+    description: "Exam include: config, examResults, assignments",
+  })
   @ApiBearerAuth()
   @Roles([UserRole.TEACHER])
-  @Get("/:id/detail")
-  async getById(@Param("id") examResultId: number): Promise<ExamResultDto> {
-    const userId = this.request?.user?.sub;
+  @Get("previews")
+  async getPreviews(@Query() queryParams: QueryParamsDto): Promise<ExamDto[]> {
+    const userId = this.request?.user.sub;
 
-    return this.examResultService.getById(userId, examResultId);
-  }
-
-  @ApiBearerAuth()
-  @Get("/exam/:examId/student/:studentId/history")
-  async getHistory(
-    @Param("examId") examId: number,
-    @Param("studentId") studentId: number
-  ): Promise<PreviewExamResultDto[]> {
-    const userId = this.request?.user?.sub;
-
-    return this.examResultService.getHistory(userId, examId, studentId);
-  }
-
-  @ApiBearerAuth()
-  @Get("/:id/score")
-  async getScore(@Param("id") id: number): Promise<MarkExamResultDto> {
-    const userId = this.request?.user?.sub;
-
-    return this.examResultService.getScore(userId, id);
+    return this.examService.getPreviews(userId, queryParams);
   }
 
   @ApiBearerAuth()
   @Roles([UserRole.TEACHER])
-  @Get("/latest/exam/:examId/classroom/:classroomId")
-  async getAllByExamId(
-    @Query() queryParamsDto: QueryParamsDto,
-    @Param("examId") examId: number,
-    @Param("classroomId") classroomId: number
-  ): Promise<ExamResultDto[]> {
-    const userId = this.request?.user?.sub;
+  @Get("/:id/config")
+  async getConfig(@Param("id") examId: number): Promise<ExamDto> {
+    const userId = this.request?.user.sub;
 
-    return this.examResultService.getLatestOfStudentByExamAndClass(userId, examId, classroomId, queryParamsDto);
+    return this.examService.getConfig(userId, examId);
   }
 
-  // Bỏ @Roles([UserRole.STUDENT]) -> bất kỳ tài khoản nào đã đăng nhập (giáo viên, học sinh, admin, ẩn danh...)
-  // đều có thể nộp bài thi. Chỉ cần có Bearer token hợp lệ (@ApiBearerAuth vẫn giữ để yêu cầu đăng nhập/token).
+  @Public()
+  @Get("/hash-id/:hashId/preview")
+  async previewByHashId(@Param("hashId") hashId: string): Promise<PreviewExamDto> {
+    return this.examService.previewByHashId(hashId);
+  }
+
   @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
+  @Get("/:id/content")
+  async getContent(@Param("id") examId: number): Promise<ExamDto> {
+    const userId = this.request?.user.sub;
+
+    return this.examService.getContent(userId, examId);
+  }
+
+  @ApiOperation({ summary: "For the students, retrieve exam content to exam without revealing the correct answer" })
+  @Public()
+  @Get("/hash-id/:hashId/content")
+  async getContentByHashId(@Param("hashId") hashId: string): Promise<GetExamContentByHashIdDto> {
+    return this.examService.getContentByHashId(hashId);
+  }
+
+  @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
   @Post()
-  async create(@Body() createExamResultDto: CreateExamResultDto): Promise<ExamResultDto> {
-    const userId = this.request.user.sub;
+  async create(@Body() createExamDto: CreateExamDto): Promise<ExamDto> {
+    const userId = this.request?.user?.sub;
 
-    return this.examResultService.create(userId, createExamResultDto);
+    return this.examService.create(userId, createExamDto);
+  }
+
+  @ApiOperation({ summary: "Read exam pages (images) with AI and return structured questions (MC/TF/SA)" })
+  @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
+  @Post("/ai-parse")
+  async aiParse(@Body(new ValidationPipe({ whitelist: true })) body: AiParseDto) {
+    return this.aiExamParseService.parseFromImages(body.images);
+  }
+
+  @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
+  @Post("/:id/publish")
+  async publish(
+    @Param("id") examId: number,
+    @Body(new ValidationPipe({ whitelist: true })) updateExamDto: PublishExamDto
+  ): Promise<ExamDto> {
+    const userId = this.request?.user.sub;
+
+    return this.examService.publish(userId, examId, updateExamDto);
+  }
+
+  @ApiBearerAuth()
+  @Roles([UserRole.TEACHER])
+  @Delete(":id")
+  async remove(@Param("id") examId: number): Promise<void> {
+    const userId = this.request?.user?.sub;
+
+    return this.examService.remove(userId, examId);
   }
 }
