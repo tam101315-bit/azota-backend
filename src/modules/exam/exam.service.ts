@@ -168,6 +168,10 @@ export class ExamService {
         relations: ["examResults", "questionParts", "questionParts.questions"],
       });
 
+      if (!exam) {
+        throw new NotFoundException("Exam not found");
+      }
+
       const questionTotal = exam.questionParts.reduce((acc, item) => acc + item.questions.length, 0);
       exam["questionTotal"] = questionTotal;
       exam["examResultTotal"] = exam.examResults.length;
