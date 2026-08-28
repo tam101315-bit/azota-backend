@@ -5,6 +5,14 @@ import { Roles } from "src/common/decorators/roles.decorator";
 import { UserRole } from "src/shared/constant";
 import { DocumentParseService } from "./documentParse.service";
 
+// Tự định nghĩa tối thiểu thay vì dùng Express.Multer.File — tránh phải thêm @types/multer làm devDependency
+interface UploadedMulterFile {
+  originalname: string;
+  mimetype: string;
+  buffer: Buffer;
+  size: number;
+}
+
 @ApiTags("Document Parse")
 @Controller("exams")
 export class DocumentParseController {
@@ -18,7 +26,7 @@ export class DocumentParseController {
   @Roles([UserRole.TEACHER])
   @Post("/parse-document")
   @UseInterceptors(FileInterceptor("file"))
-  async parseDocument(@UploadedFile() file: Express.Multer.File): Promise<{ text: string; warnings: string[] }> {
+  async parseDocument(@UploadedFile() file: UploadedMulterFile): Promise<{ text: string; warnings: string[] }> {
     if (!file) {
       throw new BadRequestException("Không có file nào được gửi lên.");
     }
