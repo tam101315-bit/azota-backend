@@ -35,6 +35,7 @@ import { TeacherPermissionModule } from "./modules/teacher-permission/teacher-pe
 import { PermissionModulue } from "./modules/permission/permission.module";
 import { SeederModule } from "./modules/seeder/seeder.module";
 import { VnpayModule } from "./modules/vnpay/vnpay.module";
+import { DocumentParseModule } from "./modules/exam/documentParse.module";
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { VnpayModule } from "./modules/vnpay/vnpay.module";
     TeacherPermissionModule,
     SeederModule,
     VnpayModule,
+    DocumentParseModule,
   ],
   providers: [
     {
