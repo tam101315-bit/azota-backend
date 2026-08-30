@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from "@nestjs/swagg
 import { Roles } from "src/common/decorators/roles.decorator";
 import { UserRole } from "src/shared/constant";
 import { LongRunning } from "src/common/decorators/long-running.decorator";
-import { DocumentParseService } from "./documentParse.service";
+import { DocumentParseService, ParsedQuestionOutput } from "./documentParse.service";
 
 // Tự định nghĩa tối thiểu thay vì dùng Express.Multer.File — tránh phải thêm @types/multer làm devDependency
 interface UploadedMulterFile {
@@ -28,7 +28,9 @@ export class DocumentParseController {
   @LongRunning()
   @Post("/parse-document")
   @UseInterceptors(FileInterceptor("file"))
-  async parseDocument(@UploadedFile() file: UploadedMulterFile) {
+  async parseDocument(
+    @UploadedFile() file: UploadedMulterFile
+  ): Promise<{ questions: ParsedQuestionOutput[]; warnings: string[] }> {
     if (!file) {
       throw new BadRequestException("Không có file nào được gửi lên.");
     }
