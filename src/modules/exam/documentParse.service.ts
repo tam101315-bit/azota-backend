@@ -47,13 +47,27 @@ interface BuiltQuestionSA {
 }
 type BuiltQuestion = BuiltQuestionMC | BuiltQuestionTF | BuiltQuestionSA;
 
+// Khớp CHÍNH XÁC với interface ParsedQuestion (MC/TF/SA) trong uploadExam.tsx (frontend)
+// để trang review "Tạo đề từ tệp PDF/Word" dùng thẳng, không cần chuyển đổi gì thêm.
+interface ParsedQuestionOutput {
+  id: string;
+  type: "MC" | "TF" | "SA";
+  partTitle: string;
+  content: string;
+  answers?: { A: string; B: string; C: string; D: string };
+  correct?: "A" | "B" | "C" | "D" | null;
+  statements?: { label: "a" | "b" | "c" | "d"; text: string; isTrue: boolean | null }[];
+  answer?: string;
+  include: boolean;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────
 
 @Injectable()
 export class DocumentParseService {
   constructor(private readonly aiExamParseService: AiExamParseService) {}
 
-  async parseDocx(fileBuffer: Buffer): Promise<{ text: string; warnings: string[] }> {
+  async parseDocx(fileBuffer: Buffer): Promise<{ questions: ParsedQuestionOutput[]; warnings: string[] }> {
     const warnings: string[] = [];
 
     // 1. Document Parser: docx -> HTML (giữ nguyên vị trí ảnh dạng placeholder __IMG_N__)
@@ -89,10 +103,54 @@ export class DocumentParseService {
     // 8. Validator
     this.validateQuestions(questionsI, questionsII, questionsIII, warnings);
 
-    // 9. Serialize -> DSL text đúng cú pháp editor đang dùng
-    const text = this.serializeToDsl(questionsI, questionsII, questionsIII);
+    // 9. Chuyển sang đúng cấu trúc ParsedQuestion[] mà trang "Tạo đề từ tệp PDF/Word" (uploadExam.tsx) đang dùng
+    const questions = this.buildParsedQuestionsOutput(questionsI, questionsII, questionsIII);
 
-    return { text, warnings };
+    return { questions, warnings };
+  }
+
+  private buildParsedQuestionsOutput(
+    questionsI: BuiltQuestionMC[],
+    questionsII: BuiltQuestionTF[],
+    questionsIII: BuiltQuestionSA[]
+  ): ParsedQuestionOutput[] {
+    const output: ParsedQuestionOutput[] = [];
+
+    questionsI.forEach((q, idx) => {
+      output.push({
+        id: `docx_I_${idx + 1}_${Date.now()}`,
+        type: "MC",
+        partTitle: "Phần 1. Trắc nghiệm",
+        content: q.content,
+        answers: q.options,
+        correct: q.correct,
+        include: true,
+      });
+    });
+
+    questionsII.forEach((q, idx) => {
+      output.push({
+        id: `docx_II_${idx + 1}_${Date.now()}`,
+        type: "TF",
+        partTitle: "Phần 2. Đúng/Sai",
+        content: q.content,
+        statements: q.statements,
+        include: true,
+      });
+    });
+
+    questionsIII.forEach((q, idx) => {
+      output.push({
+        id: `docx_III_${idx + 1}_${Date.now()}`,
+        type: "SA",
+        partTitle: "Phần 3. Trả lời ngắn",
+        content: q.content,
+        answer: q.answer,
+        include: true,
+      });
+    });
+
+    return output;
   }
 
   // ── Bước 1: Document Parser ──────────────────────────────────────────────
@@ -128,14 +186,23 @@ export class DocumentParseService {
     warnings: string[]
   ): Promise<Map<string, string>> {
     const result = new Map<string, string>();
+    const entries = Array.from(images.entries());
 
-    for (const [placeholder, { buffer, contentType }] of images.entries()) {
-      try {
-        const png = await this.convertOneImageToPngBase64(buffer, contentType);
-        result.set(placeholder, png);
-      } catch (err) {
-        warnings.push(`Không convert được ảnh ${placeholder} (${contentType}): ${err}`);
-      }
+    // Convert song song theo từng lô (CONCURRENCY ảnh cùng lúc) thay vì tuần tự từng ảnh một —
+    // với đề thi có hàng trăm công thức WMF, xử lý tuần tự dễ vượt quá timeout của server.
+    const CONCURRENCY = 10;
+    for (let i = 0; i < entries.length; i += CONCURRENCY) {
+      const batch = entries.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(async ([placeholder, { buffer, contentType }]) => {
+          try {
+            const png = await this.convertOneImageToPngBase64(buffer, contentType);
+            result.set(placeholder, png);
+          } catch (err) {
+            warnings.push(`Không convert được ảnh ${placeholder} (${contentType}): ${err}`);
+          }
+        })
+      );
     }
 
     return result;
@@ -573,51 +640,49 @@ export class DocumentParseService {
     pngByPlaceholder: Map<string, string>,
     warnings: string[]
   ): Promise<BuiltQuestionSA[]> {
-    const questions: BuiltQuestionSA[] = [];
-
     const partIIIBlocks = blocks.filter((b) => b.part === "III").sort((a, b) => a.questionNumber - b.questionNumber);
 
-    for (const block of partIIIBlocks) {
-      const fullHtml = block.htmlChunks.join(" ").replace(/<strong>\s*Câu\s+\d+\s*[:.]\s*<\/strong>/i, "");
+    // Mỗi câu Phần III độc lập với nhau -> gọi AI song song thay vì tuần tự, giảm đáng kể thời gian chờ
+    const results = await Promise.all(
+      partIIIBlocks.map(async (block) => {
+        const fullHtml = block.htmlChunks.join(" ").replace(/<strong>\s*Câu\s+\d+\s*[:.]\s*<\/strong>/i, "");
 
-      const plainWithGaps = this.htmlToPlainTextWithPlaceholders(fullHtml).replace(/__IMG_\d+__/g, "[CT]");
+        const plainWithGaps = this.htmlToPlainTextWithPlaceholders(fullHtml).replace(/__IMG_\d+__/g, "[CT]");
 
-      const placeholderRegex = /__IMG_(\d+)__/g;
-      const placeholders = [...fullHtml.matchAll(placeholderRegex)].map((m) => m[0]);
-      const images = placeholders.map((p) => pngByPlaceholder.get(p)).filter((v): v is string => !!v);
+        const placeholderRegex = /__IMG_(\d+)__/g;
+        const placeholders = [...fullHtml.matchAll(placeholderRegex)].map((m) => m[0]);
+        const images = placeholders.map((p) => pngByPlaceholder.get(p)).filter((v): v is string => !!v);
 
-      if (images.length === 0) {
-        // Không có ảnh nào -> có thể rule-parse trực tiếp mà không cần AI, nhưng để nhất quán độ tin cậy
-        // (Phần III luôn ưu tiên AI theo Hướng A đã chọn) vẫn gọi AI với 0 ảnh, chỉ dựa vào text.
-      }
+        try {
+          const solved = await this.aiExamParseService.solveShortAnswerQuestion(
+            block.questionNumber,
+            plainWithGaps,
+            images
+          );
 
-      try {
-        const solved = await this.aiExamParseService.solveShortAnswerQuestion(
-          block.questionNumber,
-          plainWithGaps,
-          images
-        );
+          if (!solved.answer) {
+            warnings.push(`Câu ${block.questionNumber} (Phần III): AI không tự giải được, cần bạn tự điền đáp án.`);
+          }
 
-        questions.push({
-          type: "SA",
-          content: this.sanitizeForSingleLine(solved.content) || `(Câu ${block.questionNumber} — cần điền tay)`,
-          answer: solved.answer || "",
-        });
-
-        if (!solved.answer) {
-          warnings.push(`Câu ${block.questionNumber} (Phần III): AI không tự giải được, cần bạn tự điền đáp án.`);
+          const question: BuiltQuestionSA = {
+            type: "SA",
+            content: this.sanitizeForSingleLine(solved.content) || `(Câu ${block.questionNumber} — cần điền tay)`,
+            answer: solved.answer || "",
+          };
+          return question;
+        } catch (err) {
+          warnings.push(`Câu ${block.questionNumber} (Phần III): lỗi khi gọi AI giải bài — ${err}. Cần điền tay.`);
+          const question: BuiltQuestionSA = {
+            type: "SA",
+            content: this.sanitizeForSingleLine(plainWithGaps.replace(/\[CT\]/g, "(công thức)")),
+            answer: "",
+          };
+          return question;
         }
-      } catch (err) {
-        warnings.push(`Câu ${block.questionNumber} (Phần III): lỗi khi gọi AI giải bài — ${err}. Cần điền tay.`);
-        questions.push({
-          type: "SA",
-          content: this.sanitizeForSingleLine(plainWithGaps.replace(/\[CT\]/g, "(công thức)")),
-          answer: "",
-        });
-      }
-    }
+      })
+    );
 
-    return questions;
+    return results;
   }
 
   // ── Bước 8: Validator ───────────────────────────────────────────────────
@@ -647,43 +712,4 @@ export class DocumentParseService {
     });
   }
 
-  // ── Bước 9: Serialize -> DSL text đúng cú pháp editor ──────────────────────
-
-  private serializeToDsl(questionsI: BuiltQuestionMC[], questionsII: BuiltQuestionTF[], questionsIII: BuiltQuestionSA[]): string {
-    const lines: string[] = [];
-
-    if (questionsI.length > 0) {
-      lines.push("Phần 1.");
-      questionsI.forEach((q, idx) => {
-        lines.push(`Câu ${idx + 1}. ${q.content}`);
-        (["A", "B", "C", "D"] as const).forEach((key) => {
-          const prefix = q.correct === key ? `*${key}.` : `${key}.`;
-          lines.push(`${prefix} ${q.options[key]}`);
-        });
-        lines.push("");
-      });
-    }
-
-    if (questionsII.length > 0) {
-      lines.push("Phần 2.");
-      questionsII.forEach((q, idx) => {
-        lines.push(`Câu ${idx + 1}. ${q.content}`);
-        q.statements.forEach((s) => {
-          lines.push(`${s.label}) ${s.text} - ${s.isTrue ? "Đ" : "S"}`);
-        });
-        lines.push("");
-      });
-    }
-
-    if (questionsIII.length > 0) {
-      lines.push("Phần 3.");
-      questionsIII.forEach((q, idx) => {
-        lines.push(`Câu ${idx + 1}. ${q.content}`);
-        lines.push(`Trả lời: ${q.answer}`);
-        lines.push("");
-      });
-    }
-
-    return lines.join("\n").trim();
-  }
 }
