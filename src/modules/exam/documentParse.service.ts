@@ -87,18 +87,16 @@ export class DocumentParseService {
     // 5. Thu thập TOÀN BỘ placeholder ảnh công thức cần OCR (Phần I + Phần II),
     //    gửi 1 lần duy nhất cho AI để tiết kiệm chi phí & thời gian
     const formulaPlaceholders = this.collectFormulaPlaceholders(blocks, /* excludePart */ "III");
-    const formulaTextByPlaceholder = await this.recognizeFormulasBatch(
-      formulaPlaceholders,
-      pngByPlaceholder,
-      warnings
-    );
+    // 5+7. 2 việc này ĐỘC LẬP nhau (OCR công thức Phần I/II, và giải Phần III) -> chạy song song
+    // thay vì tuần tự, giảm đáng kể tổng thời gian chờ AI.
+    const [formulaTextByPlaceholder, questionsIII] = await Promise.all([
+      this.recognizeFormulasBatch(formulaPlaceholders, pngByPlaceholder, warnings),
+      this.buildPartIIIQuestions(blocks, pngByPlaceholder, warnings),
+    ]);
 
     // 6. Dựng câu hỏi Phần I (MC) và Phần II (TF) — rule-based + thay placeholder ảnh bằng text AI đã đọc
     const questionsI = this.buildPartIQuestions(blocks, answerKeyI, pngByPlaceholder, formulaTextByPlaceholder, warnings);
     const questionsII = this.buildPartIIQuestions(blocks, answerKeyII, pngByPlaceholder, formulaTextByPlaceholder, warnings);
-
-    // 7. Dựng câu hỏi Phần III (SA) — luôn cần AI đọc ảnh + tự giải (Hướng A)
-    const questionsIII = await this.buildPartIIIQuestions(blocks, pngByPlaceholder, warnings);
 
     // 8. Validator
     this.validateQuestions(questionsI, questionsII, questionsIII, warnings);
@@ -409,19 +407,33 @@ export class DocumentParseService {
 
     // OpenRouter free models thường giới hạn số ảnh/1 request -> chia batch 20 ảnh/lần cho an toàn
     const BATCH_SIZE = 20;
+    const batches: { placeholders: string[]; images: string[] }[] = [];
     for (let i = 0; i < validPlaceholders.length; i += BATCH_SIZE) {
-      const batchPlaceholders = validPlaceholders.slice(i, i + BATCH_SIZE);
-      const batchImages = images.slice(i, i + BATCH_SIZE);
+      batches.push({
+        placeholders: validPlaceholders.slice(i, i + BATCH_SIZE),
+        images: images.slice(i, i + BATCH_SIZE),
+      });
+    }
 
-      try {
-        const texts = await this.aiExamParseService.recognizeFormulas(batchImages);
-        batchPlaceholders.forEach((placeholder, idx) => {
-          result.set(placeholder, texts[idx] || "");
-        });
-      } catch (err) {
-        warnings.push(`Lỗi khi AI đọc công thức (batch ${i}-${i + BATCH_SIZE}): ${err}`);
-        batchPlaceholders.forEach((placeholder) => result.set(placeholder, ""));
-      }
+    // Gọi các lô SONG SONG (giới hạn số lô chạy cùng lúc để tránh bị OpenRouter rate-limit/quá tải)
+    // thay vì tuần tự từng lô — đây là điểm nghẽn chính khiến quá trình chậm trước đây.
+    const BATCH_CONCURRENCY = 4;
+    for (let i = 0; i < batches.length; i += BATCH_CONCURRENCY) {
+      const group = batches.slice(i, i + BATCH_CONCURRENCY);
+      await Promise.all(
+        group.map(async (batch, idxInGroup) => {
+          const batchIndex = i + idxInGroup;
+          try {
+            const texts = await this.aiExamParseService.recognizeFormulas(batch.images);
+            batch.placeholders.forEach((placeholder, idx) => {
+              result.set(placeholder, texts[idx] || "");
+            });
+          } catch (err) {
+            warnings.push(`Lỗi khi AI đọc công thức (lô ${batchIndex + 1}/${batches.length}): ${err}`);
+            batch.placeholders.forEach((placeholder) => result.set(placeholder, ""));
+          }
+        })
+      );
     }
 
     return result;
