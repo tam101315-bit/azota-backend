@@ -13,7 +13,7 @@ import { LONG_RUNNING_KEY } from "../decorators/long-running.decorator";
 const DEFAULT_TIMEOUT_MS = 60000;
 // Các route đánh dấu @LongRunning() (vd: parse-document xử lý AI/convert ảnh) được cấp 5 phút
 // thay vì 60s mặc định — đủ thời gian cho convert nhiều ảnh WMF + gọi OpenRouter nhiều lần.
-const LONG_RUNNING_TIMEOUT_MS = 5 * 60 * 1000;
+const LONG_RUNNING_TIMEOUT_MS = 9 * 60 * 1000;
 
 @Injectable()
 export class TimeoutInterceptor implements NestInterceptor {
