@@ -3,6 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Roles } from "src/common/decorators/roles.decorator";
 import { UserRole } from "src/shared/constant";
+import { LongRunning } from "src/common/decorators/long-running.decorator";
 import { DocumentParseService } from "./documentParse.service";
 
 // Tự định nghĩa tối thiểu thay vì dùng Express.Multer.File — tránh phải thêm @types/multer làm devDependency
@@ -19,14 +20,15 @@ export class DocumentParseController {
   constructor(private readonly documentParseService: DocumentParseService) {}
 
   @ApiOperation({
-    summary: "Đọc file .docx đề thi, tự động tách câu hỏi/đáp án bằng Rule Parser + AI Parser, trả về text đúng cú pháp editor",
+    summary: "Đọc file .docx đề thi, tự động tách câu hỏi/đáp án bằng Rule Parser + AI Parser, trả về mảng câu hỏi cho trang review",
   })
   @ApiConsumes("multipart/form-data")
   @ApiBearerAuth()
   @Roles([UserRole.TEACHER])
+  @LongRunning()
   @Post("/parse-document")
   @UseInterceptors(FileInterceptor("file"))
-  async parseDocument(@UploadedFile() file: UploadedMulterFile): Promise<{ text: string; warnings: string[] }> {
+  async parseDocument(@UploadedFile() file: UploadedMulterFile) {
     if (!file) {
       throw new BadRequestException("Không có file nào được gửi lên.");
     }
