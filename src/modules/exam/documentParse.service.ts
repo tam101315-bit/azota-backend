@@ -49,7 +49,7 @@ type BuiltQuestion = BuiltQuestionMC | BuiltQuestionTF | BuiltQuestionSA;
 
 // Khớp CHÍNH XÁC với interface ParsedQuestion (MC/TF/SA) trong uploadExam.tsx (frontend)
 // để trang review "Tạo đề từ tệp PDF/Word" dùng thẳng, không cần chuyển đổi gì thêm.
-interface ParsedQuestionOutput {
+export interface ParsedQuestionOutput {
   id: string;
   type: "MC" | "TF" | "SA";
   partTitle: string;
