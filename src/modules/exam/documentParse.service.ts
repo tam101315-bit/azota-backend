@@ -188,7 +188,7 @@ export class DocumentParseService {
 
     // Convert song song theo từng lô (CONCURRENCY ảnh cùng lúc) thay vì tuần tự từng ảnh một —
     // với đề thi có hàng trăm công thức WMF, xử lý tuần tự dễ vượt quá timeout của server.
-    const CONCURRENCY = 10;
+    const CONCURRENCY = 20;
     for (let i = 0; i < entries.length; i += CONCURRENCY) {
       const batch = entries.slice(i, i + CONCURRENCY);
       await Promise.all(
@@ -217,12 +217,15 @@ export class DocumentParseService {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wmf-conv-"));
     try {
       const inputPath = path.join(tmpDir, "input.wmf");
-      const svgPath = path.join(tmpDir, "out.svg");
       const pngPath = path.join(tmpDir, "out.png");
 
       await fs.writeFile(inputPath, buffer);
-      await execAsync(`wmf2svg -o "${svgPath}" "${inputPath}"`);
-      await execAsync(`rsvg-convert -w 400 --background-color=white "${svgPath}" -o "${pngPath}"`);
+
+      // Dùng wmf2gd (render thẳng ra PNG, bỏ qua bước SVG/XML trung gian) thay vì wmf2svg + rsvg-convert.
+      // Cách cũ (wmf2svg -> SVG -> rsvg-convert) hay lỗi vì một số font/ký tự đặc biệt trong công thức
+      // khiến wmf2svg sinh ra SVG chứa byte không hợp lệ UTF-8, làm rsvg-convert đọc XML thất bại.
+      // wmf2gd tránh hoàn toàn vấn đề này vì không đi qua định dạng text/XML nào cả.
+      await execAsync(`wmf2gd -o "${pngPath}" -t png --maxwidth=500 --maxpect "${inputPath}"`);
 
       const pngBuffer = await fs.readFile(pngPath);
       return pngBuffer.toString("base64");
@@ -403,34 +406,51 @@ export class DocumentParseService {
     if (placeholders.length === 0) return result;
 
     const validPlaceholders = placeholders.filter((p) => pngByPlaceholder.has(p));
-    const images = validPlaceholders.map((p) => pngByPlaceholder.get(p)!);
 
-    // OpenRouter free models thường giới hạn số ảnh/1 request -> chia batch 20 ảnh/lần cho an toàn
-    const BATCH_SIZE = 20;
-    const batches: { placeholders: string[]; images: string[] }[] = [];
-    for (let i = 0; i < validPlaceholders.length; i += BATCH_SIZE) {
-      batches.push({
-        placeholders: validPlaceholders.slice(i, i + BATCH_SIZE),
-        images: images.slice(i, i + BATCH_SIZE),
-      });
+    // QUAN TRỌNG: nhiều câu/đáp án dùng chung 1 công thức GIỐNG HỆT NHAU (vd: H2O, CO2, các ion quen
+    // thuộc lặp lại nhiều lần trong đề) -> nếu OCR riêng từng vị trí sẽ gửi trùng lặp rất nhiều ảnh
+    // giống nhau cho AI, lãng phí thời gian. Gom theo nội dung ảnh (base64) giống hệt nhau, chỉ OCR
+    // MỖI ẢNH KHÁC NHAU 1 LẦN DUY NHẤT, rồi áp kết quả cho toàn bộ vị trí dùng chung ảnh đó.
+    const placeholdersByImage = new Map<string, string[]>(); // base64 ảnh -> danh sách placeholder dùng ảnh này
+    for (const p of validPlaceholders) {
+      const img = pngByPlaceholder.get(p)!;
+      if (!placeholdersByImage.has(img)) placeholdersByImage.set(img, []);
+      placeholdersByImage.get(img)!.push(p);
+    }
+    const uniqueImages = Array.from(placeholdersByImage.keys());
+
+    if (uniqueImages.length < validPlaceholders.length) {
+      warnings.push(
+        `Tối ưu: ${validPlaceholders.length} vị trí công thức nhưng chỉ có ${uniqueImages.length} ảnh khác nhau (đã loại trùng trước khi gửi AI).`
+      );
     }
 
-    // Gọi các lô SONG SONG (giới hạn số lô chạy cùng lúc để tránh bị OpenRouter rate-limit/quá tải)
-    // thay vì tuần tự từng lô — đây là điểm nghẽn chính khiến quá trình chậm trước đây.
-    const BATCH_CONCURRENCY = 4;
+    // Batch nhỏ hơn (15 ảnh/lô) để mỗi lần gọi AI phản hồi nhanh hơn, bù lại bằng chạy nhiều lô song song hơn
+    const BATCH_SIZE = 15;
+    const batches: string[][] = [];
+    for (let i = 0; i < uniqueImages.length; i += BATCH_SIZE) {
+      batches.push(uniqueImages.slice(i, i + BATCH_SIZE));
+    }
+
+    // Gọi các lô SONG SONG (network-bound, không tốn CPU server -> tăng concurrency khá an toàn)
+    const BATCH_CONCURRENCY = 6;
     for (let i = 0; i < batches.length; i += BATCH_CONCURRENCY) {
       const group = batches.slice(i, i + BATCH_CONCURRENCY);
       await Promise.all(
-        group.map(async (batch, idxInGroup) => {
+        group.map(async (batchImages, idxInGroup) => {
           const batchIndex = i + idxInGroup;
           try {
-            const texts = await this.aiExamParseService.recognizeFormulas(batch.images);
-            batch.placeholders.forEach((placeholder, idx) => {
-              result.set(placeholder, texts[idx] || "");
+            const texts = await this.aiExamParseService.recognizeFormulas(batchImages);
+            batchImages.forEach((img, idx) => {
+              const text = texts[idx] || "";
+              // Áp kết quả cho MỌI placeholder dùng chung ảnh này
+              placeholdersByImage.get(img)!.forEach((placeholder) => result.set(placeholder, text));
             });
           } catch (err) {
             warnings.push(`Lỗi khi AI đọc công thức (lô ${batchIndex + 1}/${batches.length}): ${err}`);
-            batch.placeholders.forEach((placeholder) => result.set(placeholder, ""));
+            batchImages.forEach((img) => {
+              placeholdersByImage.get(img)!.forEach((placeholder) => result.set(placeholder, ""));
+            });
           }
         })
       );
