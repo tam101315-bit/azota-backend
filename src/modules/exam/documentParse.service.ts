@@ -34,11 +34,13 @@ interface BuiltQuestionMC {
   content: string;
   options: { A: string; B: string; C: string; D: string };
   correct: "A" | "B" | "C" | "D";
+  image?: string;
 }
 interface BuiltQuestionTF {
   type: "TF";
   content: string;
   statements: { label: "a" | "b" | "c" | "d"; text: string; isTrue: boolean }[];
+  image?: string;
 }
 interface BuiltQuestionSA {
   type: "SA";
@@ -59,6 +61,8 @@ export interface ParsedQuestionOutput {
   statements?: { label: "a" | "b" | "c" | "d"; text: string; isTrue: boolean | null }[];
   answer?: string;
   include: boolean;
+  /** Ảnh sơ đồ/cấu trúc thật (không phải công thức đơn giản) tự động gắn vào câu, dạng data URI base64 */
+  image?: string;
 }
 
 // ── Service ───────────────────────────────────────────────────────────────
@@ -78,15 +82,25 @@ export class DocumentParseService {
 
     const $ = cheerio.load(html);
 
+    // Nhận biết ảnh nào là "sơ đồ/cấu trúc thật" (không phải WMF công thức đơn giản) — dựa trên
+    // contentType gốc: WMF luôn là OLE Equation (công thức), còn PNG/JPEG nhúng trực tiếp
+    // hầu như luôn là hình vẽ/sơ đồ thật (đã kiểm chứng với file mẫu thực tế).
+    const isDiagramPlaceholder = (placeholder: string): boolean => {
+      const info = images.get(placeholder);
+      if (!info) return false;
+      const ct = info.contentType || "";
+      return !(ct.includes("wmf") || ct.includes("x-wmf") || ct.includes("emf"));
+    };
+
     // 3. Rule Parser: tách thành từng câu hỏi theo Phần/Câu
     const blocks = this.groupIntoQuestionBlocks($);
 
     // 4. Đọc bảng ĐÁP ÁN PHẦN I / PHẦN II (rule-based, không cần AI)
     const { answerKeyI, answerKeyII } = this.extractAnswerKeyTables($);
 
-    // 5. Thu thập TOÀN BỘ placeholder ảnh công thức cần OCR (Phần I + Phần II),
+    // 5. Thu thập TOÀN BỘ placeholder ảnh công thức cần OCR (Phần I + Phần II, KHÔNG bao gồm ảnh sơ đồ),
     //    gửi 1 lần duy nhất cho AI để tiết kiệm chi phí & thời gian
-    const formulaPlaceholders = this.collectFormulaPlaceholders(blocks, /* excludePart */ "III");
+    const formulaPlaceholders = this.collectFormulaPlaceholders(blocks, /* excludePart */ "III", isDiagramPlaceholder);
     // 5+7. 2 việc này ĐỘC LẬP nhau (OCR công thức Phần I/II, và giải Phần III) -> chạy song song
     // thay vì tuần tự, giảm đáng kể tổng thời gian chờ AI.
     const [formulaTextByPlaceholder, questionsIII] = await Promise.all([
@@ -95,8 +109,25 @@ export class DocumentParseService {
     ]);
 
     // 6. Dựng câu hỏi Phần I (MC) và Phần II (TF) — rule-based + thay placeholder ảnh bằng text AI đã đọc
-    const questionsI = this.buildPartIQuestions(blocks, answerKeyI, pngByPlaceholder, formulaTextByPlaceholder, warnings);
-    const questionsII = this.buildPartIIQuestions(blocks, answerKeyII, pngByPlaceholder, formulaTextByPlaceholder, warnings);
+    //    + tự động gắn ảnh sơ đồ thật (nếu có) làm ảnh minh hoạ cho câu
+    const questionsI = this.buildPartIQuestions(
+      blocks,
+      answerKeyI,
+      pngByPlaceholder,
+      formulaTextByPlaceholder,
+      images,
+      isDiagramPlaceholder,
+      warnings
+    );
+    const questionsII = this.buildPartIIQuestions(
+      blocks,
+      answerKeyII,
+      pngByPlaceholder,
+      formulaTextByPlaceholder,
+      images,
+      isDiagramPlaceholder,
+      warnings
+    );
 
     // 8. Validator
     this.validateQuestions(questionsI, questionsII, questionsIII, warnings);
@@ -123,6 +154,7 @@ export class DocumentParseService {
         answers: q.options,
         correct: q.correct,
         include: true,
+        image: q.image,
       });
     });
 
@@ -134,6 +166,7 @@ export class DocumentParseService {
         content: q.content,
         statements: q.statements,
         include: true,
+        image: q.image,
       });
     });
 
@@ -383,7 +416,11 @@ export class DocumentParseService {
 
   // ── Bước 5: Thu thập & OCR hàng loạt công thức (Phần I + II) ──────────────
 
-  private collectFormulaPlaceholders(blocks: RawQuestionBlock[], excludePart: PartRoman): string[] {
+  private collectFormulaPlaceholders(
+    blocks: RawQuestionBlock[],
+    excludePart: PartRoman,
+    isDiagramPlaceholder: (placeholder: string) => boolean
+  ): string[] {
     const placeholders: string[] = [];
     const regex = /__IMG_\d+__/g;
 
@@ -391,7 +428,11 @@ export class DocumentParseService {
       if (block.part === excludePart) continue;
       for (const chunk of block.htmlChunks) {
         const matches = chunk.match(regex);
-        if (matches) placeholders.push(...matches);
+        if (matches) {
+          // Ảnh sơ đồ/cấu trúc thật (không phải công thức đơn giản) không đưa vào OCR text —
+          // sẽ được xử lý riêng, tự động gắn thẳng làm ảnh minh hoạ cho câu hỏi.
+          placeholders.push(...matches.filter((m) => !isDiagramPlaceholder(m)));
+        }
       }
     }
     return placeholders;
@@ -523,11 +564,35 @@ export class DocumentParseService {
 
   // ── Bước 6: Dựng câu hỏi Phần I (MC) ───────────────────────────────────────
 
+  /** Tìm ảnh sơ đồ thật (không phải công thức WMF) đầu tiên trong 1 đoạn HTML, trả về dạng data URI */
+  private findDiagramImageDataUri(
+    html: string,
+    images: Map<string, { buffer: Buffer; contentType: string }>,
+    pngByPlaceholder: Map<string, string>,
+    isDiagramPlaceholder: (placeholder: string) => boolean
+  ): string | undefined {
+    const matches = html.match(/__IMG_\d+__/g);
+    if (!matches) return undefined;
+
+    for (const placeholder of matches) {
+      if (isDiagramPlaceholder(placeholder)) {
+        const base64 = pngByPlaceholder.get(placeholder);
+        const contentType = images.get(placeholder)?.contentType || "image/png";
+        if (base64) {
+          return `data:${contentType};base64,${base64}`;
+        }
+      }
+    }
+    return undefined;
+  }
+
   private buildPartIQuestions(
     blocks: RawQuestionBlock[],
     answerKey: AnswerKeyPartI,
     pngByPlaceholder: Map<string, string>,
     formulaTextByPlaceholder: Map<string, string>,
+    images: Map<string, { buffer: Buffer; contentType: string }>,
+    isDiagramPlaceholder: (placeholder: string) => boolean,
     warnings: string[]
   ): BuiltQuestionMC[] {
     const questions: BuiltQuestionMC[] = [];
@@ -590,11 +655,17 @@ export class DocumentParseService {
         warnings.push(`Câu ${block.questionNumber} (Phần I): không tìm thấy đáp án đúng trong bảng ĐÁP ÁN, mặc định để A — cần kiểm tra lại.`);
       }
 
+      const diagramImage = this.findDiagramImageDataUri(fullHtml, images, pngByPlaceholder, isDiagramPlaceholder);
+      if (diagramImage) {
+        warnings.push(`Câu ${block.questionNumber} (Phần I): đã tự động gắn 1 ảnh sơ đồ/cấu trúc vào câu — kiểm tra lại vị trí ảnh cho đúng.`);
+      }
+
       questions.push({
         type: "MC",
         content: content || `(Câu ${block.questionNumber} — không đọc được nội dung, cần điền tay)`,
         options,
         correct: correct || "A",
+        image: diagramImage,
       });
     }
 
@@ -608,6 +679,8 @@ export class DocumentParseService {
     answerKey: AnswerKeyPartII,
     pngByPlaceholder: Map<string, string>,
     formulaTextByPlaceholder: Map<string, string>,
+    images: Map<string, { buffer: Buffer; contentType: string }>,
+    isDiagramPlaceholder: (placeholder: string) => boolean,
     warnings: string[]
   ): BuiltQuestionTF[] {
     const questions: BuiltQuestionTF[] = [];
@@ -655,10 +728,16 @@ export class DocumentParseService {
         warnings.push(`Câu ${block.questionNumber} (Phần II): không tìm thấy đáp án Đ/S trong bảng ĐÁP ÁN, mặc định tất cả là Sai — cần kiểm tra lại.`);
       }
 
+      const diagramImage = this.findDiagramImageDataUri(fullHtml, images, pngByPlaceholder, isDiagramPlaceholder);
+      if (diagramImage) {
+        warnings.push(`Câu ${block.questionNumber} (Phần II): đã tự động gắn 1 ảnh sơ đồ/cấu trúc vào câu — kiểm tra lại vị trí ảnh cho đúng.`);
+      }
+
       questions.push({
         type: "TF",
         content: content || `(Câu ${block.questionNumber} — không đọc được nội dung, cần điền tay)`,
         statements,
+        image: diagramImage,
       });
     }
 
