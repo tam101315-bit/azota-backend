@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from "@nestjs/common";
 import * as mammoth from "mammoth";
 import * as cheerio from "cheerio";
+import * as JSZip from "jszip";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs/promises";
@@ -77,15 +78,31 @@ export class DocumentParseService {
     // 1. Document Parser: docx -> HTML (giữ nguyên vị trí ảnh dạng placeholder __IMG_N__)
     const { html, images } = await this.extractHtmlWithImagePlaceholders(fileBuffer);
 
+    // 1b. Đọc trực tiếp document.xml để biết CHÍNH XÁC ảnh nào là công thức (MathType) hay
+    // sơ đồ/cấu trúc thật (ChemWindow...) — quan trọng vì cả 2 loại đều có thể xuất ra cùng
+    // định dạng WMF, nên không thể chỉ dựa vào định dạng file để phân biệt.
+    const imageKindSequence = await this.extractImageKindSequence(fileBuffer);
+    if (imageKindSequence.length > 0 && imageKindSequence.length !== images.size) {
+      warnings.push(
+        `Cảnh báo nội bộ: số ảnh đọc từ document.xml (${imageKindSequence.length}) không khớp số ảnh mammoth trích xuất (${images.size}) — dùng tiêu chí dự phòng để phân loại ảnh, có thể kém chính xác hơn.`
+      );
+    }
+
     // 2. Convert toàn bộ ảnh WMF nhúng -> PNG base64 (ảnh thường như png/jpg thì giữ nguyên)
     const pngByPlaceholder = await this.convertAllImagesToPng(images, warnings);
 
     const $ = cheerio.load(html);
 
-    // Nhận biết ảnh nào là "sơ đồ/cấu trúc thật" (không phải WMF công thức đơn giản) — dựa trên
-    // contentType gốc: WMF luôn là OLE Equation (công thức), còn PNG/JPEG nhúng trực tiếp
-    // hầu như luôn là hình vẽ/sơ đồ thật (đã kiểm chứng với file mẫu thực tế).
+    // Nhận biết ảnh nào là "sơ đồ/cấu trúc thật": ưu tiên dùng kết quả đọc ProgID trực tiếp từ
+    // document.xml (chính xác nhất); nếu vì lý do gì đó không khớp được (số lượng ảnh không trùng khớp,
+    // cấu trúc file lạ...), dự phòng bằng tiêu chí WMF/non-WMF cũ.
     const isDiagramPlaceholder = (placeholder: string): boolean => {
+      const match = placeholder.match(/^__IMG_(\d+)__$/);
+      const index = match ? parseInt(match[1], 10) - 1 : -1;
+      if (index >= 0 && index < imageKindSequence.length) {
+        return imageKindSequence[index] === "diagram";
+      }
+      // Dự phòng: không đọc được document.xml hoặc số lượng ảnh lệch -> dùng tiêu chí cũ
       const info = images.get(placeholder);
       if (!info) return false;
       const ct = info.contentType || "";
@@ -185,6 +202,53 @@ export class DocumentParseService {
   }
 
   // ── Bước 1: Document Parser ──────────────────────────────────────────────
+
+  /**
+   * Đọc TRỰC TIẾP word/document.xml (không qua mammoth) để xác định mỗi ảnh nhúng thuộc loại gì,
+   * dựa trên ProgID của OLE object gốc — CHÍNH XÁC hơn nhiều so với chỉ dựa vào định dạng file (WMF/PNG):
+   * - "Equation.DSMT4" (MathType) -> công thức đơn giản, dù xuất ra WMF
+   * - "ChemWindow.Document" (ChemWindow) -> sơ đồ/cấu trúc hoá học THẬT, dù CŨNG xuất ra WMF giống công thức
+   *   (đây chính là lý do tiêu chí WMF/non-WMF cũ bị sai — ChemWindow và MathType đều xuất WMF như nhau)
+   * - ảnh chèn trực tiếp không qua OLE object (w:drawing thường) -> luôn là ảnh/sơ đồ thật
+   *
+   * Trả về mảng theo ĐÚNG THỨ TỰ xuất hiện trong tài liệu — vị trí thứ N trong mảng này tương ứng
+   * với placeholder __IMG_N__ mà mammoth sinh ra (mammoth cũng duyệt tài liệu theo đúng thứ tự này).
+   * Nếu không đọc được document.xml (file lỗi, cấu trúc lạ...) trả về mảng rỗng -> hệ thống sẽ tự
+   * dùng lại tiêu chí WMF/non-WMF cũ làm phương án dự phòng.
+   */
+  private async extractImageKindSequence(fileBuffer: Buffer): Promise<("formula" | "diagram")[]> {
+    try {
+      const zip = await JSZip.loadAsync(fileBuffer);
+      const documentXmlFile = zip.file("word/document.xml");
+      if (!documentXmlFile) return [];
+      const xml = await documentXmlFile.async("text");
+
+      type Event = { pos: number; kind: "formula" | "diagram" };
+      const events: Event[] = [];
+
+      // OLE object (công thức MathType hoặc sơ đồ ChemWindow, phân biệt bằng ProgID)
+      const objectRegex = /<w:object[^>]*>[\s\S]*?<\/w:object>/g;
+      let match: RegExpExecArray | null;
+      while ((match = objectRegex.exec(xml))) {
+        const block = match[0];
+        const progIdMatch = block.match(/<o:OLEObject[^>]*ProgID="([^"]+)"/);
+        const progId = progIdMatch ? progIdMatch[1] : "";
+        const kind: "formula" | "diagram" = progId === "ChemWindow.Document" ? "diagram" : "formula";
+        events.push({ pos: match.index, kind });
+      }
+
+      // Ảnh chèn trực tiếp (không qua OLE object) -> luôn là ảnh/sơ đồ thật
+      const pictureRegex = /<pic:blipFill><a:blip r:embed="rId\d+"/g;
+      while ((match = pictureRegex.exec(xml))) {
+        events.push({ pos: match.index, kind: "diagram" });
+      }
+
+      events.sort((a, b) => a.pos - b.pos);
+      return events.map((e) => e.kind);
+    } catch (err) {
+      return [];
+    }
+  }
 
   private async extractHtmlWithImagePlaceholders(
     fileBuffer: Buffer
